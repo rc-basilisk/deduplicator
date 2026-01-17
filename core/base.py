@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional
+from datetime import datetime
 import mimetypes
 
 
@@ -14,7 +15,8 @@ class FileInfo:
     def __init__(self, path: str):
         self.path = path
         self.size = os.path.getsize(path)
-        self.modified = os.path.getmtime(path)
+        # Convert Unix timestamp to datetime object for SQLAlchemy
+        self.modified = datetime.fromtimestamp(os.path.getmtime(path))
         self.name = os.path.basename(path)
         self.ext = os.path.splitext(path)[1].lower()
         self.mime_type = mimetypes.guess_type(path)[0]

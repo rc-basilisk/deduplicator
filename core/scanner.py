@@ -65,7 +65,8 @@ class DuplicateScanner:
                 path, 
                 include_subdirs,
                 progress_callback=lambda fp, count: progress_callback(
-                    path_idx, len(paths), 
+                    int((path_idx / len(paths)) * 100),
+                    100,
                     f"Discovered {len(all_files) + count} files"
                 ) if progress_callback else None
             )
@@ -79,7 +80,7 @@ class DuplicateScanner:
             status_callback(f"✅ Found {total_files} files")
         
         if progress_callback:
-            progress_callback(len(paths), len(paths), f"Found {total_files} files")
+            progress_callback(100, 100, f"Found {total_files} files")
         
         # Step 2: Group files by category
         files_by_category = defaultdict(list)
@@ -115,7 +116,8 @@ class DuplicateScanner:
             duplicates = self._find_duplicates(
                 files, detector, category,
                 lambda cur, tot: progress_callback(
-                    current_category - 1 + (cur / tot), total_categories,
+                    int(((current_category - 1) / total_categories + (cur / tot / total_categories)) * 100),
+                    100,
                     f"Analyzing {category_display}: {cur}/{tot}"
                 ) if progress_callback else None
             )

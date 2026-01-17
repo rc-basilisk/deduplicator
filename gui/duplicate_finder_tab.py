@@ -254,9 +254,9 @@ class DuplicateFinderTab(QWidget):
     
     def update_progress(self, current, total, message):
         """Update progress bar"""
-        if total > 0:
-            progress = int((current / total) * 100)
-            self.progress_bar.setValue(min(progress, 100))  # Cap at 100%
+        # current and total are now both in 0-100 range (percentages)
+        # Just set the progress directly
+        self.progress_bar.setValue(int(current))
         self.status_label.setText(message)
     
     def update_status(self, message):
