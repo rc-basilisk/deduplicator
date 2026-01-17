@@ -2,6 +2,7 @@
 Main scanning engine that coordinates duplicate detection.
 """
 import os
+import time
 from typing import List, Dict, Tuple, Optional, Callable
 from collections import defaultdict
 from pathlib import Path
@@ -16,13 +17,15 @@ from database.models import Database, DuplicateGroup, FileEntry
 
 class DuplicateScanner:
     """Main scanner engine"""
-    
-    def __init__(self, db: Database, session_id: int, 
-                 file_types: List[str], similarity_threshold: float = 0.95):
+
+    def __init__(self, db: Database, session_id: int,
+                 file_types: List[str], similarity_threshold: float = 0.95,
+                 thread_count: int = 4):
         self.db = db
         self.session_id = session_id
         self.file_types = file_types
         self.similarity_threshold = similarity_threshold
+        self.thread_count = thread_count  # For future parallel processing
         
         # Initialize detectors
         self.detectors = {}
@@ -129,7 +132,7 @@ class DuplicateScanner:
             for group_files, similarity in duplicates:
                 if self.is_stopped:
                     break
-                
+
                 dup_group = DuplicateGroup(
                     session_id=self.session_id,
                     file_type=category,
@@ -137,25 +140,23 @@ class DuplicateScanner:
                 )
                 session.add(dup_group)
                 session.flush()  # Get the group ID
-                
+
+                # Only create one thumbnail per group (for the first file)
+                # This optimization reduces disk I/O and processing time
+                group_thumbnail_path = None
+                if category in ['image', 'video'] and group_files:
+                    first_file = group_files[0]
+                    thumb_name = f"{dup_group.id}_representative.jpg"
+                    group_thumbnail_path = os.path.join(thumbnails_dir, thumb_name)
+                    detector.create_thumbnail(first_file.path, group_thumbnail_path)
+
                 for file_info in group_files:
-                    # Create thumbnail if applicable
-                    thumbnail_path = None
-                    if category in ['image', 'video']:
-                        thumb_name = f"{dup_group.id}_{os.path.basename(file_info.path)}.jpg"
-                        thumbnail_path = os.path.join(thumbnails_dir, thumb_name)
-                        
-                        if category == 'image':
-                            detector.create_thumbnail(file_info.path, thumbnail_path)
-                        elif category == 'video':
-                            detector.create_thumbnail(file_info.path, thumbnail_path)
-                    
                     file_entry = FileEntry(
                         group_id=dup_group.id,
                         file_path=file_info.path,
                         file_size=file_info.size,
                         modified_time=file_info.modified,
-                        thumbnail_path=thumbnail_path
+                        thumbnail_path=group_thumbnail_path  # All files in group share the same thumbnail
                     )
                     session.add(file_entry)
             
@@ -170,77 +171,135 @@ class DuplicateScanner:
                         progress_callback: Optional[Callable] = None) -> List[Tuple[List[FileInfo], float]]:
         """Find duplicate files using the given detector"""
         duplicates = []
-        signatures = {}
-        
-        # Compute signatures
+        # Pre-compute all signatures into a dict (addresses Phase 3.8)
+        file_signatures: Dict[str, str] = {}
+        signature_groups: Dict[str, List[FileInfo]] = defaultdict(list)
+
+        # Phase 1: Compute all signatures upfront
         total = len(files)
         for idx, file_info in enumerate(files):
             if self.is_stopped or self.is_paused:
                 while self.is_paused and not self.is_stopped:
-                    pass  # Wait while paused
+                    time.sleep(0.1)  # Sleep to avoid busy-wait CPU consumption
                 if self.is_stopped:
                     break
-            
+
             if progress_callback:
                 progress_callback(idx + 1, total)
-            
+
             sig = detector.compute_signature(file_info.path)
             if sig:
-                if sig not in signatures:
-                    signatures[sig] = []
-                signatures[sig].append(file_info)
-        
-        # For exact matches (archives, some documents)
-        for sig, file_list in signatures.items():
+                file_signatures[file_info.path] = sig
+                signature_groups[sig].append(file_info)
+
+        # Phase 2: Find exact matches (same signature)
+        for sig, file_list in signature_groups.items():
             if len(file_list) > 1:
                 duplicates.append((file_list, 1.0))
-        
-        # For fuzzy matches (images, documents, videos, code)
+
+        # Phase 3: For fuzzy matches, use prefix-based grouping to reduce O(n^2)
         if category in ['image', 'video', 'document', 'code']:
-            self._find_similar_pairs(files, detector, duplicates, progress_callback)
-        
+            self._find_similar_pairs_optimized(
+                files, detector, file_signatures, duplicates, progress_callback
+            )
+
         return duplicates
-    
-    def _find_similar_pairs(self, files: List[FileInfo], detector,
-                           duplicates: List, progress_callback: Optional[Callable] = None):
-        """Find similar (but not exact) duplicates"""
+
+    def _find_similar_pairs_optimized(self, files: List[FileInfo], detector,
+                                      file_signatures: Dict[str, str],
+                                      duplicates: List,
+                                      progress_callback: Optional[Callable] = None):
+        """Find similar duplicates using prefix-based grouping to reduce comparisons"""
+        # Group files by signature prefix (first 4 chars) for locality-sensitive hashing
+        prefix_groups: Dict[str, List[FileInfo]] = defaultdict(list)
+        prefix_len = 4  # First 4 characters of hash
+
+        for file_info in files:
+            sig = file_signatures.get(file_info.path)
+            if sig:
+                # Use first 4 chars as bucket key
+                prefix = sig[:prefix_len] if len(sig) >= prefix_len else sig
+                prefix_groups[prefix].append(file_info)
+
+        # Track which files are already in a duplicate group
+        file_to_group: Dict[str, int] = {}
+        for idx, (group_files, _) in enumerate(duplicates):
+            for f in group_files:
+                file_to_group[f.path] = idx
+
         processed_pairs = set()
-        total_comparisons = (len(files) * (len(files) - 1)) // 2
+        total_comparisons = sum(
+            (len(group) * (len(group) - 1)) // 2 for group in prefix_groups.values()
+        )
         current = 0
-        
-        for i, file1 in enumerate(files):
-            if self.is_stopped:
-                break
-            
-            for j, file2 in enumerate(files[i+1:], start=i+1):
+
+        # Only compare files within the same prefix group
+        for prefix, group_files in prefix_groups.items():
+            if len(group_files) < 2:
+                continue
+
+            for i, file1 in enumerate(group_files):
                 if self.is_stopped:
-                    break
-                
-                current += 1
-                if progress_callback and current % 100 == 0:
-                    progress_callback(current, total_comparisons)
-                
-                pair_key = tuple(sorted([file1.path, file2.path]))
-                if pair_key in processed_pairs:
+                    return
+
+                sig1 = file_signatures.get(file1.path)
+                if not sig1:
                     continue
-                
-                similarity = detector.compare_files(file1.path, file2.path)
-                
-                if similarity >= self.similarity_threshold:
-                    processed_pairs.add(pair_key)
-                    # Check if already in a group
-                    found_group = False
-                    for group, score in duplicates:
-                        if file1 in group or file2 in group:
-                            if file1 not in group:
-                                group.append(file1)
-                            if file2 not in group:
-                                group.append(file2)
-                            found_group = True
-                            break
-                    
-                    if not found_group:
-                        duplicates.append(([file1, file2], similarity))
+
+                for file2 in group_files[i + 1:]:
+                    if self.is_stopped:
+                        return
+
+                    current += 1
+                    if progress_callback and current % 100 == 0:
+                        progress_callback(current, max(total_comparisons, 1))
+
+                    pair_key = tuple(sorted([file1.path, file2.path]))
+                    if pair_key in processed_pairs:
+                        continue
+
+                    sig2 = file_signatures.get(file2.path)
+                    if not sig2:
+                        continue
+
+                    # Skip if already exact match (same signature)
+                    if sig1 == sig2:
+                        continue
+
+                    # Use pre-computed signatures for comparison
+                    similarity = detector.compare_signatures(sig1, sig2)
+
+                    if similarity >= self.similarity_threshold:
+                        processed_pairs.add(pair_key)
+                        # Check if already in a group
+                        group1_idx = file_to_group.get(file1.path)
+                        group2_idx = file_to_group.get(file2.path)
+
+                        if group1_idx is not None and group2_idx is not None:
+                            # Both already in groups - merge if different
+                            if group1_idx != group2_idx:
+                                # Keep first group, merge second into it
+                                duplicates[group1_idx][0].extend(duplicates[group2_idx][0])
+                                for f in duplicates[group2_idx][0]:
+                                    file_to_group[f.path] = group1_idx
+                                duplicates[group2_idx] = ([], 0)  # Mark as empty
+                        elif group1_idx is not None:
+                            # Add file2 to file1's group
+                            duplicates[group1_idx][0].append(file2)
+                            file_to_group[file2.path] = group1_idx
+                        elif group2_idx is not None:
+                            # Add file1 to file2's group
+                            duplicates[group2_idx][0].append(file1)
+                            file_to_group[file1.path] = group2_idx
+                        else:
+                            # Create new group
+                            new_idx = len(duplicates)
+                            duplicates.append(([file1, file2], similarity))
+                            file_to_group[file1.path] = new_idx
+                            file_to_group[file2.path] = new_idx
+
+        # Remove empty groups from merging
+        duplicates[:] = [(g, s) for g, s in duplicates if len(g) > 0]
     
     def pause(self):
         """Pause the scan"""

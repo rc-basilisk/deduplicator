@@ -15,6 +15,7 @@ import os
 from database import Database
 from core import DuplicateScanner
 from .results_viewer import ResultsViewer
+from .settings_tab import load_app_settings
 
 
 class ScannerThread(QThread):
@@ -40,7 +41,7 @@ class ScannerThread(QThread):
 
 class DuplicateFinderTab(QWidget):
     """Tab for finding duplicate files"""
-    
+
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
@@ -49,6 +50,22 @@ class DuplicateFinderTab(QWidget):
         self.current_session_id = None
         self.selected_paths = []
         self.init_ui()
+
+    def cleanup_thread(self):
+        """Properly clean up the scanner thread to prevent memory leaks"""
+        if self.scanner_thread is not None:
+            if self.scanner_thread.isRunning():
+                # Stop the scanner first
+                if self.scanner:
+                    self.scanner.stop()
+                # Request thread to quit and wait
+                self.scanner_thread.quit()
+                self.scanner_thread.wait(5000)  # Wait up to 5 seconds
+                if self.scanner_thread.isRunning():
+                    self.scanner_thread.terminate()  # Force terminate if still running
+                    self.scanner_thread.wait(1000)
+            self.scanner_thread = None
+            self.scanner = None
     
     def init_ui(self):
         """Initialize the UI"""
@@ -186,19 +203,22 @@ class DuplicateFinderTab(QWidget):
         if self.path_list.count() == 0:
             QMessageBox.warning(self, "No Paths", "Please add at least one folder to scan.")
             return
-        
+
         file_types = self.get_selected_file_types()
         if not file_types:
             QMessageBox.warning(self, "No File Types", "Please select at least one file type to scan.")
             return
-        
+
+        # Clean up any existing thread before starting new scan
+        self.cleanup_thread()
+
         # Collect paths
         paths = []
         include_subdirs = self.include_subdirs_check.isChecked()
         for i in range(self.path_list.count()):
             path = self.path_list.item(i).text()
             paths.append((path, include_subdirs))
-        
+
         # Create session
         similarity = self.threshold_spin.value() / 100.0
         session_name = f"Scan {len(paths)} paths"
@@ -207,18 +227,23 @@ class DuplicateFinderTab(QWidget):
             json.dumps(file_types),
             similarity
         )
-        
+
         # Update DB status
         self.db.update_session_status(self.current_session_id, 'running')
-        
+
+        # Load settings for thread count
+        settings = load_app_settings()
+        thread_count = settings.get('threads', 4)
+
         # Create scanner
         self.scanner = DuplicateScanner(
             self.db,
             self.current_session_id,
             file_types,
-            similarity
+            similarity,
+            thread_count=thread_count
         )
-        
+
         # Start scanner thread
         self.scanner_thread = ScannerThread(self.scanner, paths)
         self.scanner_thread.progress.connect(self.update_progress)

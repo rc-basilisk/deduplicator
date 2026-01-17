@@ -7,3 +7,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+
+# Misc
+CLAUDE.md
+.claude/

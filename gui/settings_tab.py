@@ -11,6 +11,7 @@ import os
 import json
 
 from database import Database
+from database.models import ScanSession
 
 
 class SettingsTab(QWidget):
@@ -154,10 +155,20 @@ class SettingsTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
-            # TODO: Implement session cleanup
-            QMessageBox.information(self, "Cleared", "Old sessions have been cleared.")
+            try:
+                session = self.db.get_session()
+                # Delete all scan sessions (cascade will delete related records)
+                deleted_count = session.query(ScanSession).delete()
+                session.commit()
+                session.close()
+                QMessageBox.information(
+                    self, "Cleared",
+                    f"Deleted {deleted_count} scan session(s) and all related data."
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to clear sessions: {str(e)}")
     
     def vacuum_database(self):
         """Optimize database"""
@@ -189,3 +200,22 @@ class SettingsTab(QWidget):
                 QMessageBox.information(self, "Cleared", "Thumbnail cache has been cleared.")
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to clear cache: {str(e)}")
+
+
+def load_app_settings() -> dict:
+    """Load application settings from file (standalone function for use by other modules)"""
+    settings_file = os.path.expanduser('~/.config/deduplicator/settings.json')
+    os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+    if os.path.exists(settings_file):
+        try:
+            with open(settings_file, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Return defaults
+    return {
+        'threads': 4,
+        'cache_size_mb': 500,
+        'ollama_url': 'http://localhost:11434',
+        'vision_model': 'llava'
+    }

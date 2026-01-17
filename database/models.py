@@ -1,7 +1,7 @@
 """
 Database models for the deduplicator application.
 """
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Text, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -42,13 +42,16 @@ class ScannedPath(Base):
 class DuplicateGroup(Base):
     """A group of duplicate files"""
     __tablename__ = 'duplicate_groups'
-    
+    __table_args__ = (
+        Index('idx_duplicate_groups_session_id', 'session_id'),
+    )
+
     id = Column(Integer, primary_key=True)
     session_id = Column(Integer, ForeignKey('scan_sessions.id'))
     file_type = Column(String(50))  # image, document, video, archive, code
     similarity_score = Column(Float)
     hash_value = Column(String(255), nullable=True)  # For exact duplicates
-    
+
     session = relationship('ScanSession', back_populates='duplicate_groups')
     files = relationship('FileEntry', back_populates='group', cascade='all, delete-orphan')
 
@@ -56,7 +59,10 @@ class DuplicateGroup(Base):
 class FileEntry(Base):
     """Individual file in a duplicate group"""
     __tablename__ = 'file_entries'
-    
+    __table_args__ = (
+        Index('idx_file_entries_group_id', 'group_id'),
+    )
+
     id = Column(Integer, primary_key=True)
     group_id = Column(Integer, ForeignKey('duplicate_groups.id'))
     file_path = Column(Text)
@@ -65,7 +71,7 @@ class FileEntry(Base):
     thumbnail_path = Column(Text, nullable=True)  # For images/videos
     file_metadata = Column(Text, nullable=True)  # JSON string for additional info
     marked_for_deletion = Column(Boolean, default=False)
-    
+
     group = relationship('DuplicateGroup', back_populates='files')
 
 

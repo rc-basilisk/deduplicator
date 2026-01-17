@@ -40,6 +40,12 @@ class BaseDetector(ABC):
     def compare_files(self, file1: str, file2: str) -> float:
         """Compare two files and return similarity score (0.0-1.0)"""
         pass
+
+    def compare_signatures(self, sig1: str, sig2: str) -> float:
+        """Compare two pre-computed signatures and return similarity (0.0-1.0).
+        Default implementation returns 1.0 for exact match, 0.0 otherwise.
+        Subclasses should override for fuzzy matching."""
+        return 1.0 if sig1 == sig2 else 0.0
     
     @staticmethod
     def file_hash(file_path: str, algorithm='sha256') -> str:

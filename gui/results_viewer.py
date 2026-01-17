@@ -10,6 +10,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
 import os
+import cv2
 import json
 import hashlib
 
@@ -76,16 +77,42 @@ class FilePreviewWidget(QWidget):
             layout.addWidget(QLabel(f"Error loading file: {str(e)}"))
     
     def show_video_preview(self, layout):
-        """Show video preview (placeholder for now)"""
-        info_label = QLabel(f"Video file: {os.path.basename(self.file_path)}")
+        """Show video preview with first frame thumbnail"""
+        try:
+            # Extract first frame using OpenCV
+            cap = cv2.VideoCapture(self.file_path)
+            ret, frame = cap.read()
+            cap.release()
+
+            if ret:
+                # Convert BGR to RGB
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_frame.shape
+                bytes_per_line = ch * w
+                q_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_image)
+
+                # Scale to reasonable size
+                scaled_pixmap = pixmap.scaled(400, 300, Qt.AspectRatioMode.KeepAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation)
+                img_label = QLabel()
+                img_label.setPixmap(scaled_pixmap)
+                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                layout.addWidget(img_label)
+            else:
+                layout.addWidget(QLabel("Could not extract video frame"))
+        except Exception as e:
+            layout.addWidget(QLabel(f"Video preview error: {str(e)}"))
+
+        # Show file info
+        info_label = QLabel(f"Video: {os.path.basename(self.file_path)}")
         layout.addWidget(info_label)
-        
-        # Show file size
+
         try:
             size = os.path.getsize(self.file_path)
             size_mb = size / (1024 * 1024)
             layout.addWidget(QLabel(f"Size: {size_mb:.2f} MB"))
-        except:
+        except Exception:
             pass
     
     def show_archive_preview(self, layout):
@@ -397,7 +424,11 @@ class ResultsViewer(QDialog):
         
         try:
             from database.models import DuplicateGroup, FileEntry
-            groups = session.query(DuplicateGroup).filter_by(
+            from sqlalchemy.orm import joinedload
+            # Use eager loading to avoid N+1 query pattern
+            groups = session.query(DuplicateGroup).options(
+                joinedload(DuplicateGroup.files)
+            ).filter_by(
                 session_id=self.session_id
             ).all()
             

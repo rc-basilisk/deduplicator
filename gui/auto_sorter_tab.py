@@ -1,6 +1,8 @@
 """
 Auto-sorter tab UI for organizing files.
 """
+import os
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
     QCheckBox, QGroupBox, QLabel, QProgressBar, QFileDialog,
@@ -33,13 +35,25 @@ class SorterThread(QThread):
 
 class AutoSorterTab(QWidget):
     """Tab for auto-sorting files"""
-    
+
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
         self.sorter = None
         self.sorter_thread = None
         self.init_ui()
+
+    def cleanup_thread(self):
+        """Properly clean up the sorter thread to prevent memory leaks"""
+        if self.sorter_thread is not None:
+            if self.sorter_thread.isRunning():
+                self.sorter_thread.quit()
+                self.sorter_thread.wait(5000)  # Wait up to 5 seconds
+                if self.sorter_thread.isRunning():
+                    self.sorter_thread.terminate()
+                    self.sorter_thread.wait(1000)
+            self.sorter_thread = None
+            self.sorter = None
     
     def init_ui(self):
         """Initialize the UI"""
@@ -145,19 +159,22 @@ class AutoSorterTab(QWidget):
         if self.source_list.count() == 0:
             QMessageBox.warning(self, "No Sources", "Please add at least one source folder.")
             return
-        
+
         if not self.dest_path.text():
             QMessageBox.warning(self, "No Destination", "Please select a destination folder.")
             return
-        
+
+        # Clean up any existing thread before starting new sort
+        self.cleanup_thread()
+
         # Collect source paths
         source_paths = []
         for i in range(self.source_list.count()):
             source_paths.append(self.source_list.item(i).text())
-        
+
         # Create sorter
         self.sorter = AutoSorter(source_paths, self.dest_path.text())
-        
+
         # Start sorter thread
         self.sorter_thread = SorterThread(self.sorter)
         self.sorter_thread.progress.connect(self.update_progress)

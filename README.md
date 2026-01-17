@@ -160,7 +160,28 @@ self.detectors['document'] = DocumentDetector(0.90)
 self.detectors['code'] = CodeDetector(0.85)
 ```
 
-### Batch Processing via CLI
+### Command-Line Interface
+
+The CLI provides scripting-friendly access to scanning and export features:
+
+```bash
+# Scan a directory for duplicates
+python cli.py scan /path/to/folder --types image document --threshold 0.95
+
+# Scan multiple directories
+python cli.py scan /path1 /path2 --types image --threshold 0.90
+
+# List all scan sessions
+python cli.py list
+
+# View details of a specific session
+python cli.py list 1
+
+# Export results to CSV
+python cli.py export 1 --output duplicates.csv
+```
+
+### Batch Processing via Python
 
 You can also use the core modules directly in scripts:
 
@@ -179,9 +200,10 @@ scanner.scan_paths([('/path/to/folder', True)])
 
 ```
 deduplicator/
-├── main.py                 # Entry point
+├── main.py                 # GUI entry point
+├── cli.py                  # Command-line interface
 ├── requirements.txt        # Python dependencies
-├── database/              
+├── database/
 │   ├── models.py          # SQLAlchemy models
 │   └── __init__.py
 ├── core/                  # Duplicate detection engine
@@ -197,7 +219,8 @@ deduplicator/
     ├── main_window.py
     ├── duplicate_finder_tab.py
     ├── auto_sorter_tab.py
-    └── settings_tab.py
+    ├── settings_tab.py
+    └── results_viewer.py  # Duplicate results with previews
 ```
 
 ## 🐛 Troubleshooting
@@ -242,14 +265,14 @@ ollama pull llava
 
 ## 📝 TODO / Future Enhancements
 
-- [ ] Results viewer window (currently shows placeholder)
-- [ ] Batch selection in results (select all in group, etc.)
-- [ ] Export duplicate reports to CSV
+- [x] Results viewer window with file previews
+- [x] Batch selection in results (select all, keep newest, keep largest)
+- [x] Export duplicate reports to CSV (via CLI)
+- [x] Command-line interface for scripting
 - [ ] Scheduled automatic scanning
 - [ ] Integration with cloud storage
 - [ ] Audio file duplicate detection
 - [ ] More ML models for categorization
-- [ ] Dark mode support
 
 ## 🤝 Contributing
 
