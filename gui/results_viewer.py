@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QCheckBox, QGroupBox, QMessageBox,
     QFileDialog, QSplitter, QTextEdit, QComboBox, QFrame
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PyQt6.QtGui import QPixmap, QImage, QCursor
 from PIL import Image
 import os
 import cv2
@@ -414,11 +414,19 @@ class ResultsViewer(QDialog):
     
     def load_results(self):
         """Load results from database"""
+        # Show loading cursor
+        self.setCursor(QCursor(Qt.CursorShape.WaitCursor))
+        self.stats_label.setText("Loading results...")
+
+        # Process events to show the cursor change immediately
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
         # Clear existing widgets
         for widget in self.group_widgets:
             widget.deleteLater()
         self.group_widgets.clear()
-        
+
         # Query database for duplicate groups
         session = self.db.get_session()
         
@@ -426,10 +434,13 @@ class ResultsViewer(QDialog):
             from database.models import DuplicateGroup, FileEntry
             from sqlalchemy.orm import joinedload
             # Use eager loading to avoid N+1 query pattern
+            # Sort by similarity score descending (highest confidence first)
             groups = session.query(DuplicateGroup).options(
                 joinedload(DuplicateGroup.files)
             ).filter_by(
                 session_id=self.session_id
+            ).order_by(
+                DuplicateGroup.similarity_score.desc()
             ).all()
             
             total_groups = len(groups)
@@ -470,6 +481,8 @@ class ResultsViewer(QDialog):
         
         finally:
             session.close()
+            # Restore normal cursor
+            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
     
     def apply_filter(self, filter_text):
         """Filter results by file type"""
