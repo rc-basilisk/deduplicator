@@ -1,54 +1,71 @@
 """
 Image duplicate detector using perceptual hashing.
+
+Uses a combination of three hash types for robust duplicate detection:
+- Average hash (ahash): Overall brightness pattern
+- Perceptual hash (phash): DCT-based, captures visual structure
+- Difference hash (dhash): Gradient-based, captures edges
+
+Images are only considered duplicates if ALL three hashes are similar,
+which dramatically reduces false positives.
 """
 import os
-from typing import Optional
+from typing import Optional, Tuple
 import imagehash
 from PIL import Image
 from .base import BaseDetector
 
 
 class ImageDetector(BaseDetector):
-    """Detect duplicate images using perceptual hashing"""
-    
-    def __init__(self, similarity_threshold: float = 0.95, hash_size: int = 8):
+    """Detect duplicate images using multi-hash perceptual hashing"""
+
+    def __init__(self, similarity_threshold: float = 0.95, hash_size: int = 12):
         super().__init__(similarity_threshold)
-        self.hash_size = hash_size
+        self.hash_size = hash_size  # Increased from 8 for better discrimination
         self.cache = {}  # Cache computed hashes
-    
+
     def compute_signature(self, file_path: str) -> Optional[str]:
-        """Compute perceptual hash for image"""
+        """Compute multi-hash signature for image.
+
+        Returns a combined signature of ahash|phash|dhash for robust matching.
+        """
         if file_path in self.cache:
             return self.cache[file_path]
 
         try:
-            # Check if file exists and is readable
             if not os.path.exists(file_path):
                 return None
 
-            # Try to open and verify it's a valid image using context manager
             with Image.open(file_path) as img:
-                img.verify()  # Verify it's not corrupted
+                img.verify()
 
-            # Reopen after verify (verify closes the file) using context manager
             with Image.open(file_path) as img:
-                # Convert to RGB if needed
                 if img.mode not in ('RGB', 'L'):
                     img = img.convert('RGB')
 
-                # Use average hash (fast and effective)
-                img_hash = imagehash.average_hash(img, hash_size=self.hash_size)
-                hash_str = str(img_hash)
-                self.cache[file_path] = hash_str
-                return hash_str
+                # Compute three different hash types for robustness
+                ahash = imagehash.average_hash(img, hash_size=self.hash_size)
+                phash = imagehash.phash(img, hash_size=self.hash_size)
+                dhash = imagehash.dhash(img, hash_size=self.hash_size)
+
+                # Combine into single signature with delimiter
+                combined = f"{ahash}|{phash}|{dhash}"
+                self.cache[file_path] = combined
+                return combined
+
         except (IOError, OSError, Image.UnidentifiedImageError):
-            # Silently skip corrupted or invalid images
             return None
         except Exception as e:
-            # Log unexpected errors but don't crash
             print(f"Warning: Could not process image {file_path}: {e}")
             return None
-    
+
+    def _parse_signature(self, sig: str) -> Optional[Tuple[str, str, str]]:
+        """Parse combined signature into individual hashes."""
+        parts = sig.split('|')
+        if len(parts) != 3:
+            return None
+        return tuple(parts)
+
     def compare_files(self, file1: str, file2: str) -> float:
         """Compare two images and return similarity score"""
         hash1 = self.compute_signature(file1)
@@ -60,21 +77,33 @@ class ImageDetector(BaseDetector):
         return self.compare_signatures(hash1, hash2)
 
     def compare_signatures(self, sig1: str, sig2: str) -> float:
-        """Compare two pre-computed image hash signatures"""
+        """Compare two multi-hash signatures.
+
+        Returns the MINIMUM similarity across all three hash types.
+        This ensures that images must be similar in structure, gradients,
+        AND overall appearance to be considered duplicates.
+        """
         try:
-            # Convert back to ImageHash objects
-            hash1_obj = imagehash.hex_to_hash(sig1)
-            hash2_obj = imagehash.hex_to_hash(sig2)
+            parts1 = self._parse_signature(sig1)
+            parts2 = self._parse_signature(sig2)
 
-            # Calculate Hamming distance
-            distance = hash1_obj - hash2_obj
+            if not parts1 or not parts2:
+                return 0.0
 
-            # Convert to similarity score (0.0-1.0)
-            # Max possible distance for hash_size=8 is 64
             max_distance = self.hash_size * self.hash_size
-            similarity = 1.0 - (distance / max_distance)
+            similarities = []
 
-            return similarity
+            for h1_str, h2_str in zip(parts1, parts2):
+                h1 = imagehash.hex_to_hash(h1_str)
+                h2 = imagehash.hex_to_hash(h2_str)
+                distance = h1 - h2
+                sim = 1.0 - (distance / max_distance)
+                similarities.append(sim)
+
+            # Return MINIMUM similarity - all hashes must agree
+            # This prevents false positives where only one hash type matches
+            return min(similarities)
+
         except Exception:
             return 0.0
     

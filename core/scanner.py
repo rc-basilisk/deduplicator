@@ -209,23 +209,21 @@ class DuplicateScanner:
                                       file_signatures: Dict[str, str],
                                       duplicates: List,
                                       progress_callback: Optional[Callable] = None):
-        """Find similar duplicates using prefix-based grouping to reduce comparisons"""
-        # Group files by signature prefix (first 4 chars) for locality-sensitive hashing
+        """Find similar duplicates using prefix-based grouping to reduce comparisons.
+
+        Uses strict grouping: a file can only join a group if it matches ALL
+        existing members of that group. No transitive grouping allowed.
+        """
+        # Group files by signature prefix for locality-sensitive hashing
+        # Use 8 chars for better discrimination (was 4)
         prefix_groups: Dict[str, List[FileInfo]] = defaultdict(list)
-        prefix_len = 4  # First 4 characters of hash
+        prefix_len = 8
 
         for file_info in files:
             sig = file_signatures.get(file_info.path)
             if sig:
-                # Use first 4 chars as bucket key
                 prefix = sig[:prefix_len] if len(sig) >= prefix_len else sig
                 prefix_groups[prefix].append(file_info)
-
-        # Track which files are already in a duplicate group
-        file_to_group: Dict[str, int] = {}
-        for idx, (group_files, _) in enumerate(duplicates):
-            for f in group_files:
-                file_to_group[f.path] = idx
 
         processed_pairs = set()
         total_comparisons = sum(
@@ -233,7 +231,8 @@ class DuplicateScanner:
         )
         current = 0
 
-        # Only compare files within the same prefix group
+        # Build groups with strict matching: every member must match every other member
+        # This prevents transitive false groupings (A~B, B~C does NOT imply A~C)
         for prefix, group_files in prefix_groups.items():
             if len(group_files) < 2:
                 continue
@@ -266,40 +265,49 @@ class DuplicateScanner:
                     if sig1 == sig2:
                         continue
 
-                    # Use pre-computed signatures for comparison
                     similarity = detector.compare_signatures(sig1, sig2)
 
                     if similarity >= self.similarity_threshold:
                         processed_pairs.add(pair_key)
-                        # Check if already in a group
-                        group1_idx = file_to_group.get(file1.path)
-                        group2_idx = file_to_group.get(file2.path)
 
-                        if group1_idx is not None and group2_idx is not None:
-                            # Both already in groups - merge if different
-                            if group1_idx != group2_idx:
-                                # Keep first group, merge second into it
-                                duplicates[group1_idx][0].extend(duplicates[group2_idx][0])
-                                for f in duplicates[group2_idx][0]:
-                                    file_to_group[f.path] = group1_idx
-                                duplicates[group2_idx] = ([], 0)  # Mark as empty
-                        elif group1_idx is not None:
-                            # Add file2 to file1's group
-                            duplicates[group1_idx][0].append(file2)
-                            file_to_group[file2.path] = group1_idx
-                        elif group2_idx is not None:
-                            # Add file1 to file2's group
-                            duplicates[group2_idx][0].append(file1)
-                            file_to_group[file1.path] = group2_idx
-                        else:
-                            # Create new group
-                            new_idx = len(duplicates)
+                        # Try to find an existing group where BOTH files fit
+                        # (both must match all existing members)
+                        added_to_group = False
+
+                        for group_files_list, group_sim in duplicates:
+                            if len(group_files_list) == 0:
+                                continue
+
+                            # Check if file1 matches all in group
+                            file1_matches_all = all(
+                                detector.compare_signatures(
+                                    sig1,
+                                    file_signatures.get(f.path, '')
+                                ) >= self.similarity_threshold
+                                for f in group_files_list
+                            )
+
+                            # Check if file2 matches all in group
+                            file2_matches_all = all(
+                                detector.compare_signatures(
+                                    sig2,
+                                    file_signatures.get(f.path, '')
+                                ) >= self.similarity_threshold
+                                for f in group_files_list
+                            )
+
+                            # Only add if BOTH match all existing members
+                            if file1_matches_all and file2_matches_all:
+                                if file1 not in group_files_list:
+                                    group_files_list.append(file1)
+                                if file2 not in group_files_list:
+                                    group_files_list.append(file2)
+                                added_to_group = True
+                                break
+
+                        # If no suitable group found, create a new pair
+                        if not added_to_group:
                             duplicates.append(([file1, file2], similarity))
-                            file_to_group[file1.path] = new_idx
-                            file_to_group[file2.path] = new_idx
-
-        # Remove empty groups from merging
-        duplicates[:] = [(g, s) for g, s in duplicates if len(g) > 0]
     
     def pause(self):
         """Pause the scan"""
